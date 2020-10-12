@@ -1,0 +1,114 @@
+---
+title: "Практическое задание 8, модель 3"
+author: "Баширова Карина"
+date: "13 04 2020"
+output: html_document
+---
+
+# Пакеты
+
+```{r warning = FALSE, message = FALSE}
+
+library(DMwR) # SMOTE
+library(DescTools)
+library(caTools) 
+library(Matrix)
+library(xgboost)
+library(caret) 
+library(tidyverse)
+library(randomForest)
+library(plyr)
+
+```
+
+# Загрузка данных
+
+
+```{r}
+
+data <- readRDS("Practice_08_dataset.rds")
+
+
+set.seed(726) 
+split <- sample.split(data$Target, SplitRatio = 0.7)
+
+data$Target <- revalue(data$Target, c(">50K"=1))
+data$Target <- revalue(data$Target, c("<=50K"=0))
+
+train <- subset(data, split == TRUE)
+test  <- subset(data, split == FALSE)
+
+table(data$Target)
+
+data <- data %>%
+  mutate(
+    Target = factor(Target),
+  )
+
+```
+
+
+## Модель с сэмплированием (Oversampling), полностью случайный лес, кросс-валидация (метод cv) (Задание 3)
+
+
+
+```{r}
+
+set.seed(125)
+train_over <- upSample(x = train[, -1], y = train$Target, yname = "Target")                         
+table(train_over$Target) 
+
+# Разряженная матрица
+train_over_xgb   <- sparse.model.matrix(Target ~ . -1, data = train_over)
+train_over_label <- as.numeric(as.character(train_over$Target))
+
+```
+
+Оверсемплинг увеличил число положительных результатов до соотношения положительных и отрицательных результатов 50 на 50%
+
+
+```{r warning = FALSE, message = FALSE}
+rfr_grid <- expand.grid(
+  mtry          = c(3,4), 
+  numRandomCuts = c(3,4)
+  )
+
+cv_params <- trainControl(
+  method = "cv",
+  number = 5)
+
+
+set.seed(167)
+model_rfr <- train(
+  Target ~ ., 
+  data = train_over, 
+  method = "extraTrees", 
+  trControl = cv_params, 
+  tuneGrid = rfr_grid, 
+  ntree = 100
+  )
+
+model_rfr
+
+# Прогноз
+test$prediction_rfr <- predict(model_rfr, test)
+
+
+# Матрица сопряженности
+confusionMatrix(data = test$prediction_rfr, 
+                reference = test$Target, 
+                positive = "1", mode = "everything")
+```
+
+
+С помощью сетки нашли оптимальные параметры mtry = 4, numRandomCuts = 3. (Я сократила количество проверяемых numRandomCuts до 2-х в связи с недостатком памяти и слишком долгим временем расчета на компьютере). Точность составила 79%. Каппа 0,45, Чувствительность 0,59, специфичность 0,85.
+С помощью процедуры оверсэмплинга была проведена балансировка выборки. Таким образом, было увеличено количество измерений до 22316 для положительных/отрицательных ответов. 
+
+В ходе работы были построены следующие модели:
+1) Модель без сэмплирования, алгоритм случайный лес
+2) Модель с сэмплированием методом SMOTE, алгоритм XGBoost
+3) Модель с сэмплированием методом оверсемплинга, алгоритм полностью случайный лес
+
+Полученная точность, показатель каппа и специфичность модели случайного леса выше, чем аналогичные параметры модели с использованием XGBoost и модели с использованием полностью случайного леса.
+Наилучшая чувствительность получилась у модели полностью случайного леса.
+Во всех построенных моделях лучше всего определяется отрицательный ответ (<=50К). По совокупности показателей наилучший результат у модели случайного леса.

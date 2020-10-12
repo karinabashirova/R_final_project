@@ -1,0 +1,191 @@
+---
+title: "Практическое задание 8, модели 1 и 2"
+author: "Баширова Карина"
+date: "13 04 2020"
+output: html_document
+---
+
+Обновление 13 апреля
+
+Забыли указать, что после проведения оверсэмплинга и андерсэмплинга целевая переменная становится в конец, поэтому необходимо перенести ее назад на первое место. Проблема не относится к SMOTE. Дополнительный код для андерсэмплинга и оверсэмплинга:
+
+Андерсэмплинг:
+
+train_under <- downSample(x = train[, -1], y = train$Target, yname = "Target") 
+train_under <- select(train_under, Target, everything())
+
+Оверсэмплинг
+
+train_over <- upSample(x = train[, -1], y = train$Target, yname = "Target")
+
+train_over <- select(train_over, Target, everything())
+
+
+
+
+
+# Пакеты
+
+```{r warning = FALSE, message = FALSE}
+
+library(DMwR) # SMOTE
+library(DescTools)
+library(caTools) 
+library(Matrix)
+library(xgboost)
+library(caret) 
+library(tidyverse)
+library(randomForest)
+library(plyr)
+
+```
+
+# Загрузка данных
+
+```{r}
+
+data <- readRDS("Practice_08_dataset.rds")
+
+
+set.seed(726) 
+split <- sample.split(data$Target, SplitRatio = 0.7)
+
+data$Target <- revalue(data$Target, c(">50K"=1))
+data$Target <- revalue(data$Target, c("<=50K"=0))
+
+train <- subset(data, split == TRUE)
+test  <- subset(data, split == FALSE)
+
+table(data$Target)
+
+data <- data %>%
+  mutate(
+    Target = factor(Target),
+  )
+
+```
+
+# Модель 1
+
+## Стандартная модель, случайный лес (Задание 1)
+
+```{r}
+
+# Модель
+set.seed(1)
+model_rf_simple <- randomForest(
+  Target ~ ., 
+  data = train,
+  ntree = 150, # кол-во деревьев
+  mtry = 2) 
+
+varImpPlot(model_rf_simple)
+
+# Прогноз
+test$prediction_rf_simple <- predict(model_rf_simple, test)
+
+# Матрица сопряженности
+confusionMatrix(data = test$prediction_rf_simple, 
+                reference = test$Target, 
+                positive = "1", mode = "everything")
+
+```
+
+Наибольшее влияние на удовлетворенность доходом оказывает семейное положение и возраст.
+
+# Модель 2
+
+## Модель с сэмплированием (SMOTE), XGBoost (Задание 2)
+
+```{r}
+
+data <- readRDS("Practice_08_dataset.rds")
+
+set.seed(726) 
+split <- sample.split(data$Target, SplitRatio = 0.7)
+data$Target <- revalue(data$Target, c(">50K"=1))
+data$Target <- revalue(data$Target, c("<=50K"=0))
+train <- subset(data, split == TRUE)
+test  <- subset(data, split == FALSE)
+data <- data %>%
+  mutate(
+    Target = factor(Target),
+  )
+data <- as.data.frame(data)
+test_xgb <- sparse.model.matrix(Target ~ . -1, data = test)
+set.seed(313)
+
+train_smote <- SMOTE(Target ~ ., data  = as.data.frame(data))
+table(train_smote$Target)
+
+# Разряженная матрица
+train_smote_xgb   <- sparse.model.matrix(Target ~ . -1, data = train_smote)
+train_smote_label <- as.numeric(as.character(train_smote$Target))
+
+```
+
+Сэмплирование методом SMOTE привело к увеличению числа положительных результатов, но не довело соотношение положительных и отрицательных результатов до 50 на 50%.
+
+```{r}
+threshold <- 0.5
+```
+
+
+```{r}
+set.seed(95)
+model_xgb_smote <- xgboost(
+  
+  # Данные
+  data = train_smote_xgb, label = train_smote_label, 
+  
+  # Параметры модели
+  max.depth = 5, colsample_bytree = 0.5, gamma = 0.2,
+  eta = 0.1, nrounds = 35, 
+  
+  # Тип задачи
+  objective = "binary:logistic", 
+  
+  verbose = 0) 
+
+
+test$predict_smote <- predict(model_xgb_smote, test_xgb)
+
+test$predict_smote[test$predict_smote > threshold] <- 1
+test$predict_smote[test$predict_smote <= threshold] <- 0
+test$predict_smote <- as.factor(test$predict_smote)
+
+
+
+confusionMatrix(data = test$predict_smote, 
+                reference = test$Target, 
+                positive = "1", mode = "everything")
+
+```
+
+### Вывод по модели 3
+Модель 3 приведена в отдельном файле.
+
+В модели 3 с помощью сетки нашли оптимальные параметры mtry = 4, numRandomCuts = 3. (Я сократила количество проверяемых mtry и numRandomCuts до 2-х в связи с недостатком памяти и слишком долгим временем расчета на компьютере. Во время тестирования проверяла на сетке mtry = c(2,3,4), numRandomCuts = c(3,4), результаты были аналогичные).
+
+Точность составила 79%. Каппа 0,45, Чувствительность 0,59, специфичность 0,85.
+
+С помощью процедуры оверсэмплинга была проведена балансировка выборки. Таким образом, было увеличено количество измерений до 22316 для положительных/отрицательных ответов. 
+
+
+# Итоговый вывод
+
+В ходе работы были построены следующие модели:
+
+1) Модель без сэмплирования, алгоритм случайный лес
+
+2) Модель с сэмплированием методом SMOTE, алгоритм XGBoost
+
+3) Модель с сэмплированием методом оверсемплинга, алгоритм полностью случайный лес
+
+Полученная точность, показатель каппа и специфичность модели случайного леса выше, чем аналогичные параметры модели с использованием XGBoost и модели с использованием полностью случайного леса.
+
+Наилучшая чувствительность получилась у модели полностью случайного леса.
+
+Во всех построенных моделях лучше всего определяется отрицательный ответ (<=50К). 
+
+По совокупности показателей наилучший результат у модели случайного леса.
